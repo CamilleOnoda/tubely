@@ -3,7 +3,11 @@ package main
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -38,17 +42,18 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	file, header, err := r.FormFile("thumbnail")
+	srcFile, header, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
 		return
 	}
-	defer file.Close()
+	defer srcFile.Close()
 
-	mediaType := header.Header.Get("Content-Type")
-	imageData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to read file", err)
+	contentType := header.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || (mediaType != "image/jpeg" && mediaType != "image/png") {
+		respondWithError(w, http.StatusBadRequest,
+			"media type should be either image/jpeg or image/png", err)
 		return
 	}
 
@@ -64,14 +69,26 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	newThumbNail := thumbnail{
-		data:      imageData,
-		mediaType: mediaType,
+	fileExtension := strings.Split(mediaType, "/")
+	filePath := filepath.Join(cfg.assetsRoot, videoID.String()+"."+fileExtension[1])
+	newFile, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Failed to create file path", err)
+		return
 	}
-	videoThumbnails[videoID] = newThumbNail
 
-	url := fmt.Sprintf("http://localhost:%s/api/thumbnails/%v", cfg.port, videoID)
+	_, err = io.Copy(newFile, srcFile)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Failed to copy the file to disk", err)
+		return
+	}
+
+	url := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, videoID.String(), fileExtension[1])
+	fmt.Println(url)
 	metaData.ThumbnailURL = &url
+
 	err = cfg.db.UpdateVideo(metaData)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError,
