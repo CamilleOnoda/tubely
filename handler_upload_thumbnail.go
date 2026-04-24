@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -44,7 +46,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	srcFile, header, err := r.FormFile("thumbnail")
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
+		respondWithError(w, http.StatusBadRequest, "Unable to parse file", err)
 		return
 	}
 	defer srcFile.Close()
@@ -70,7 +72,10 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	fileExtension := strings.Split(mediaType, "/")
-	filePath := filepath.Join(cfg.assetsRoot, videoID.String()+"."+fileExtension[1])
+	byteSlice := make([]byte, 32)
+	rand.Read(byteSlice)
+	encoded := base64.RawURLEncoding.EncodeToString(byteSlice)
+	filePath := filepath.Join(cfg.assetsRoot, encoded+"."+fileExtension[1])
 	newFile, err := os.Create(filePath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError,
@@ -85,8 +90,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	url := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, videoID.String(), fileExtension[1])
-	fmt.Println(url)
+	url := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, encoded, fileExtension[1])
 	metaData.ThumbnailURL = &url
 
 	err = cfg.db.UpdateVideo(metaData)
