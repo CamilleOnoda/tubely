@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -22,19 +25,22 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid ID", err)
+		respondWithError(w, http.StatusBadRequest,
+			"Invalid ID", err)
 		return
 	}
 
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
+		respondWithError(w, http.StatusUnauthorized,
+			"Couldn't find JWT", err)
 		return
 	}
 
 	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
 	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
+		respondWithError(w, http.StatusUnauthorized,
+			"Couldn't validate JWT", err)
 		return
 	}
 
@@ -48,7 +54,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	srcFile, header, err := r.FormFile("video")
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to parse file", err)
+		respondWithError(w, http.StatusBadRequest,
+			"Unable to parse file", err)
 		return
 	}
 	defer srcFile.Close()
@@ -75,7 +82,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	tempFile, err := os.CreateTemp("", "tubely-upload-*")
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to create temporary file", err)
+		respondWithError(w, http.StatusInternalServerError,
+			"Unable to create temporary file", err)
 		return
 	}
 	defer os.Remove(tempFile.Name())
@@ -83,10 +91,27 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	_, err = io.Copy(tempFile, srcFile)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to save the uploaded file", err)
+		respondWithError(w, http.StatusInternalServerError,
+			"Unable to save the uploaded file", err)
+		return
+	}
+	tempFile.Seek(0, io.SeekStart)
+
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Unable to determine video aspect ratio", err)
+		return
 	}
 
-	tempFile.Seek(0, io.SeekStart)
+	switch aspectRatio {
+	case "16:9":
+		videoIDString = "landscape/" + videoIDString
+	case "9:16":
+		videoIDString = "portrait/" + videoIDString
+	default:
+		videoIDString = "other/" + videoIDString
+	}
 
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
@@ -95,7 +120,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		ContentType: &contentType,
 	})
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to upload the file to S3", err)
+		respondWithError(w, http.StatusInternalServerError,
+			"Unable to upload the file to S3", err)
 		return
 	}
 
@@ -110,4 +136,63 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	respondWithJSON(w, http.StatusOK, metaData)
 
+}
+
+// getVideoAspectRatio uses ffprobe to determine the aspect ratio of a video file at the given filePath.
+// It returns a string representing the aspect ratio ("16:9", "9:16", or "other") and an error if any occurs.
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command(
+		"ffprobe",
+		"-v",
+		"error",
+		"-print_format",
+		"json",
+		"-show_streams",
+		filePath,
+	)
+
+	var outBuffer bytes.Buffer
+	cmd.Stdout = &outBuffer
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to execute ffprobe: %w", err)
+	}
+
+	unmarshalledOutput := struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}{}
+	if err := json.Unmarshal(outBuffer.Bytes(), &unmarshalledOutput); err != nil {
+		return "", fmt.Errorf("failed to unmarshal ffprobe output: %w", err)
+	}
+	if len(unmarshalledOutput.Streams) == 0 {
+		return "", fmt.Errorf("no streams found in ffprobe output")
+	}
+
+	width := unmarshalledOutput.Streams[0].Width
+	height := unmarshalledOutput.Streams[0].Height
+	if width == 0 || height == 0 {
+		return "", fmt.Errorf("invalid width or height in ffprobe output")
+	}
+
+	const tolerance = 0.02 // Allow 2% tolerance for aspect ratio comparison
+	ratio := float64(width) / float64(height)
+	if abs(ratio-16.0/9.0) < tolerance {
+		return "16:9", nil
+	}
+	if abs(ratio-9.0/16.0) < tolerance {
+		return "9:16", nil
+	}
+
+	return "other", nil
+}
+
+// abs returns the absolute value of a float64 number.
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
