@@ -70,13 +70,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	metaData, err := cfg.db.GetVideo(videoID)
+	videoDB, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError,
 			"Failed to retrieve the video's metadata", err)
 		return
 	}
-	if metaData.UserID != userID {
+	if videoDB.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized,
 			"The authenticated user is not the video owner", err)
 		return
@@ -142,15 +142,22 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	url := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, videoIDString)
-	metaData.VideoURL = &url
-	err = cfg.db.UpdateVideo(metaData)
+	storedURL := fmt.Sprintf("%s,%s", cfg.s3Bucket, videoIDString)
+	videoDB.VideoURL = &storedURL
+	err = cfg.db.UpdateVideo(videoDB)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError,
 			"Could not update the video with the video URL", err)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, metaData)
+	presignedVideoURL, err := cfg.dbVideoToSignedVideo(videoDB)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError,
+			"Unable to generate a presigned URL for the uploaded video", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, presignedVideoURL)
 
 }
